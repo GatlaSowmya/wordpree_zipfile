@@ -1,201 +1,188 @@
-environment {
-    // Customizable Configuration
-    WP_DIR = "/var/www/html"
-    DB_NAME = "wp"
-    DB_USER = "pool"
-    DB_PASS = "pool@12345"
-    WP_ADMIN_USER = "admin"
-    WP_ADMIN_PASS = "admin@Secure123"
-    WP_ADMIN_EMAIL = "admin@yourdomain.com"
-    WP_PORT = "8081"
-    
-    // Auto-detected values
-    WP_URL = sh(script: 'curl -s http://13.201.31.222/latest/meta-data/public-ipv4 || hostname -I | awk \'{print $1}\'', returnStdout: true).trim()
-}
-
-stages {
-    stage('Initialize Environment') {
-        steps {
-            script {
-                echo "Starting WordPress Deployment on ${WP_URL}:${WP_PORT}"
-                
-                // Verify required commands
-                sh """
-                command -v unzip >/dev/null || sudo apt-get install -y unzip
-                command -v mysql >/dev/null || sudo apt-get install -y mysql-server
-                command -v apache2 >/dev/null || sudo apt-get install -y apache2
-                """
-            }
-        }
+pipeline {
+    environment {
+        // Customizable Configuration
+        WP_DIR = '/var/www/html'
+        DB_NAME = 'wp'
+        DB_USER = 'pool'
+        DB_PASS = 'pool@12345'
+        WP_ADMIN_USER = 'admin'
+        WP_ADMIN_PASS = 'admin@Secure123'
+        WP_ADMIN_EMAIL = 'admin@yourdomain.com'
+        WP_PORT = '8081'
+        
+        // Auto-detected values
+        WP_URL = "${sh(script: 'curl -s http://13.233.73.111/latest/meta-data/public-ipv4 || hostname -I | awk \'{print $1}\' ', returnStdout: true).trim()}"
     }
 
-    stage('Database Setup') {
-        steps {
-            script {
-                try {
-                    // Secure MySQL installation
-                    sh """
-                    sudo systemctl start mysql
-                    sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '';"
-                    sudo mysql -e "CREATE DATABASE IF NOT EXISTS ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-                    sudo mysql -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
-                    sudo mysql -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
-                    sudo mysql -e "FLUSH PRIVILEGES;"
-                    """
+    stages {
+        stage('Initialize Environment') {
+            steps {
+                script {
+                    echo "Starting WordPress Deployment on ${WP_URL}:${WP_PORT}"
                     
-                    // Verify connection
-                    def dbTest = sh(script: "mysql -u ${DB_USER} -p${DB_PASS} -e 'SHOW DATABASES;'", returnStatus: true)
-                    if (dbTest != 0) {
-                        error "Database connection test failed!"
+                    // Verify required commands
+                    sh '''
+                    command -v unzip >/dev/null || sudo apt-get install -y unzip
+                    command -v mysql >/dev/null || sudo apt-get install -y mysql-server
+                    command -v apache2 >/dev/null || sudo apt-get install -y apache2
+                    '''
+                }
+            }
+        }
+
+        stage('Database Setup') {
+            steps {
+                script {
+                    try {
+                        sh '''
+                        sudo systemctl start mysql
+                        sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '';"
+                        sudo mysql -e "CREATE DATABASE IF NOT EXISTS ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+                        sudo mysql -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+                        sudo mysql -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
+                        sudo mysql -e "FLUSH PRIVILEGES;"
+                        '''
+
+                        def dbTest = sh(script: "mysql -u ${DB_USER} -p${DB_PASS} -e 'SHOW DATABASES;'", returnStatus: true)
+                        if (dbTest != 0) {
+                            error "Database connection test failed!"
+                        }
+                    } catch (Exception e) {
+                        echo "Database setup failed: ${e.getMessage()}"
+                        sh "sudo systemctl status mysql"
+                        error "Aborting pipeline due to database error"
                     }
-                } catch (Exception e) {
-                    echo "Database setup failed: ${e.getMessage()}"
-                    sh "sudo systemctl status mysql"
-                    error "Aborting pipeline due to database error"
                 }
             }
         }
-    }
 
-    stage('WordPress Deployment') {
-        steps {
-            script {
-                try {
-                    // Clean and prepare directory
-                    sh """
-                    sudo rm -rf /opt/latest.zip /opt/wordpress
-                    sudo rm -f ${WP_DIR}/index.html
-                    sudo mkdir -p ${WP_DIR}
-                    """
-                    
-                    // Download and verify WordPress
-                    sh """
-                    sudo wget --no-check-certificate https://wordpress.org/latest.zip -O /opt/latest.zip
-                    sudo unzip -q /opt/latest.zip -d /opt/
-                    sudo mv /opt/wordpress/* ${WP_DIR}/
-                    """
-                    
-                    // Set permissions
-                    sh """
-                    sudo chown -R www-data:www-data ${WP_DIR}
-                    sudo find ${WP_DIR} -type d -exec chmod 755 {} \\;
-                    sudo find ${WP_DIR} -type f -exec chmod 644 {} \\;
-                    """
-                } catch (Exception e) {
-                    echo "WordPress deployment failed: ${e.getMessage()}"
-                    sh "ls -la ${WP_DIR}"
-                    error "Aborting pipeline due to deployment error"
-                }
-            }
-        }
-    }
+        stage('WordPress Deployment') {
+            steps {
+                script {
+                    try {
+                        sh '''
+                        sudo rm -rf /opt/latest.zip /opt/wordpress
+                        sudo rm -f ${WP_DIR}/index.html
+                        sudo mkdir -p ${WP_DIR}
+                        '''
 
-    stage('Web Server Configuration') {
-        steps {
-            script {
-                try {
-                    // Configure Apache
-                    sh """
-                    sudo bash -c 'cat > /etc/apache2/sites-available/wordpress.conf <<EOF
-                    Listen ${WP_PORT}
-                    <VirtualHost *:${WP_PORT}>
-                        ServerName ${WP_URL}
-                        DocumentRoot ${WP_DIR}
-                        <Directory ${WP_DIR}>
-                            Options FollowSymLinks
-                            AllowOverride All
-                            Require all granted
-                        </Directory>
-                        ErrorLog \${APACHE_LOG_DIR}/wordpress_error.log
-                        CustomLog \${APACHE_LOG_DIR}/wordpress_access.log combined
-                    </VirtualHost>
-                    EOF'
-                    
-                    sudo a2ensite wordpress.conf
-                    sudo a2dissite 000-default.conf
-                    sudo a2enmod rewrite
-                    
-                    # Configure firewall if ufw exists
-                    if command -v ufw >/dev/null; then
-                        sudo ufw allow ${WP_PORT}/tcp
-                    fi
-                    
-                    sudo systemctl restart apache2
-                    """
-                    
-                    // Verify port is listening
-                    def portCheck = sh(script: "sudo netstat -tulnp | grep ${WP_PORT} || true", returnStdout: true).trim()
-                    if (!portCheck) {
-                        echo "WARNING: Port ${WP_PORT} not listening! Checking Apache..."
-                        sh "sudo systemctl status apache2"
-                        sh "sudo tail -n 50 /var/log/apache2/error.log"
+                        sh '''
+                        sudo wget --no-check-certificate https://wordpress.org/latest.zip -O /opt/latest.zip
+                        sudo unzip -q /opt/latest.zip -d /opt/
+                        sudo mv /opt/wordpress/* ${WP_DIR}/
+                        '''
+
+                        sh '''
+                        sudo chown -R www-data:www-data ${WP_DIR}
+                        sudo find ${WP_DIR} -type d -exec chmod 755 {} \;
+                        sudo find ${WP_DIR} -type f -exec chmod 644 {} \;
+                        '''
+                    } catch (Exception e) {
+                        echo "WordPress deployment failed: ${e.getMessage()}"
+                        sh "ls -la ${WP_DIR}"
+                        error "Aborting pipeline due to deployment error"
                     }
-                } catch (Exception e) {
-                    echo "Web server configuration failed: ${e.getMessage()}"
-                    sh "sudo tail -n 50 /var/log/apache2/error.log"
-                    error "Aborting pipeline due to web server error"
+                }
+            }
+        }
+
+        stage('Web Server Configuration') {
+            steps {
+                script {
+                    try {
+                        sh '''
+                        echo "Listen ${WP_PORT}" | sudo tee /etc/apache2/ports.conf
+                        sudo bash -c 'cat > /etc/apache2/sites-available/wordpress.conf <<EOF
+                        <VirtualHost *:${WP_PORT}>
+                            ServerName ${WP_URL}
+                            DocumentRoot ${WP_DIR}
+                            <Directory ${WP_DIR}>
+                                Options FollowSymLinks
+                                AllowOverride All
+                                Require all granted
+                            </Directory>
+                            ErrorLog ${APACHE_LOG_DIR}/wordpress_error.log
+                            CustomLog ${APACHE_LOG_DIR}/wordpress_access.log combined
+                        </VirtualHost>
+                        EOF'
+
+                        sudo a2ensite wordpress.conf
+                        sudo a2dissite 000-default.conf
+                        sudo a2enmod rewrite
+                        '''
+
+                        sh '''
+                        if command -v ufw >/dev/null; then
+                            sudo ufw allow ${WP_PORT}/tcp
+                        fi
+                        sudo systemctl restart apache2
+                        '''
+
+                        def portCheck = sh(script: "sudo netstat -tulnp | grep ${WP_PORT} || true", returnStdout: true).trim()
+                        if (!portCheck) {
+                            echo "WARNING: Port ${WP_PORT} not listening! Checking Apache..."
+                            sh "sudo systemctl status apache2"
+                            sh "sudo tail -n 50 /var/log/apache2/error.log"
+                        }
+                    } catch (Exception e) {
+                        echo "Web server configuration failed: ${e.getMessage()}"
+                        error "Aborting pipeline due to web server error"
+                    }
+                }
+            }
+        }
+
+        stage('Final Configuration') {
+            steps {
+                script {
+                    try {
+                        sh '''
+                        sudo cp ${WP_DIR}/wp-config-sample.php ${WP_DIR}/wp-config.php
+                        sudo sed -i "s/database_name_here/${DB_NAME}/" ${WP_DIR}/wp-config.php
+                        sudo sed -i "s/username_here/${DB_USER}/" ${WP_DIR}/wp-config.php
+                        sudo sed -i "s/password_here/${DB_PASS}/" ${WP_DIR}/wp-config.php
+                        '''
+
+                        sh '''
+                        if ! command -v wp >/dev/null; then
+                            sudo curl -o /usr/local/bin/wp https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+                            sudo chmod +x /usr/local/bin/wp
+                        fi
+                        '''
+
+                        sh '''
+                        sudo -u www-data wp core install --path=${WP_DIR} \
+                            --url="http://${WP_URL}:${WP_PORT}" \
+                            --title="My WordPress Site" \
+                            --admin_user="${WP_ADMIN_USER}" \
+                            --admin_password="${WP_ADMIN_PASS}" \
+                            --admin_email="${WP_ADMIN_EMAIL}" \
+                            --skip-email
+                        '''
+                    } catch (Exception e) {
+                        echo "Final configuration failed: ${e.getMessage()}"
+                        error "Pipeline completed with configuration errors"
+                    }
                 }
             }
         }
     }
 
-    stage('Final Configuration') {
-        steps {
-            script {
-                try {
-                    // Configure WordPress
-                    sh """
-                    sudo cp ${WP_DIR}/wp-config-sample.php ${WP_DIR}/wp-config.php
-                    sudo sed -i "s/database_name_here/${DB_NAME}/" ${WP_DIR}/wp-config.php
-                    sudo sed -i "s/username_here/${DB_USER}/" ${WP_DIR}/wp-config.php
-                    sudo sed -i "s/password_here/${DB_PASS}/" ${WP_DIR}/wp-config.php
-                    
-                    # Install WP-CLI if not exists
-                    if ! command -v wp >/dev/null; then
-                        sudo curl -o /usr/local/bin/wp https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
-                        sudo chmod +x /usr/local/bin/wp
-                    fi
-                    
-                    sudo -u www-data wp core install --path=${WP_DIR} \\
-                        --url="http://${WP_URL}:${WP_PORT}" \\
-                        --title="My WordPress Site" \\
-                        --admin_user="${WP_ADMIN_USER}" \\
-                        --admin_password="${WP_ADMIN_PASS}" \\
-                        --admin_email="${WP_ADMIN_EMAIL}" \\
-                        --skip-email
-                    """
-                } catch (Exception e) {
-                    echo "Final configuration failed: ${e.getMessage()}"
-                    error "Pipeline completed with configuration errors"
-                }
-            }
+    post {
+        always {
+            sh '''
+            echo "=== Deployment Summary ==="
+            echo "WordPress URL: http://${WP_URL}:${WP_PORT}"
+            echo "Admin URL: http://${WP_URL}:${WP_PORT}/wp-admin"
+            echo "Admin User: ${WP_ADMIN_USER}"
+            echo "Database: ${DB_NAME} (User: ${DB_USER})"
+            '''
         }
-    }
-}
-
-post {
-    always {
-        // Final status checks
-        sh """
-        echo "=== Deployment Summary ==="
-        echo "WordPress URL: http://${WP_URL}:${WP_PORT}"
-        echo "Admin URL: http://${WP_URL}:${WP_PORT}/wp-admin"
-        echo "Admin User: ${WP_ADMIN_USER}"
-        echo "Database: ${DB_NAME} (User: ${DB_USER})"
-        echo "=== Server Status ==="
-        sudo systemctl status apache2 --no-pager | head -n 5 || true
-        sudo systemctl status mysql --no-pager | head -n 5 || true
-        sudo netstat -tulnp | grep ${WP_PORT} || echo "WARNING: Port ${WP_PORT} not listening!"
-        """
-    }
-    success {
-        echo "WordPress deployment completed successfully!"
-        // If you have Slack plugin installed and configured:
-        // slackSend(color: "good", message: "WordPress deployed: http://${WP_URL}:${WP_PORT}")
-    }
-    failure {
-        echo "WordPress deployment failed!"
-        // If you have Slack plugin installed and configured:
-        // slackSend(color: "danger", message: "WordPress deployment failed!")
+        success {
+            echo "WordPress deployment completed successfully!"
+        }
+        failure {
+            echo "WordPress deployment failed!"
+        }
     }
 }
